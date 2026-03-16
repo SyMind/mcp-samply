@@ -6,6 +6,8 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import {
+  breakdownBySubsystem,
+  focusFunctions,
   inspectThread,
   searchFunctions,
   summarizeProfile,
@@ -132,6 +134,182 @@ test("profile analysis uses samply sidecar symbols to produce summaries", async 
     assert.equal(search.matches[0]?.name, "hot_fn");
     assert.equal(search.matches[0]?.selfSamples, 2);
     assert.equal(search.matches[0]?.threads[0]?.index, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("profile analysis can group Rust subsystems and recover hotspot contexts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "mcp-samply-rust-"));
+  const profilePath = path.join(tempDir, "fixture.json");
+
+  const profile = {
+    meta: {
+      product: "fixture",
+      oscpu: "test-os",
+      interval: 1,
+      startTime: 0,
+    },
+    libs: [
+      {
+        name: "rspack.node",
+        debugName: "rspack.node",
+      },
+      {
+        name: "libsystem_kernel.dylib",
+        debugName: "libsystem_kernel.dylib",
+      },
+    ],
+    threads: [
+      {
+        name: "tokio-runtime-worker",
+        processName: "node",
+        pid: 42,
+        tid: 11,
+        stringArray: [
+          "rspack_core::resolver::resolve_tracing",
+          "<rspack_fs::native_fs::NativeFileSystem as rspack_paths::FileMetadata>::metadata_sync",
+          "stat",
+          "<rspack_fs::native_fs::NativeFileSystem as rspack_paths::ReadRef>::read_sync",
+          "__open",
+          "rspack.node",
+          "libsystem_kernel.dylib",
+        ],
+        samples: {
+          length: 3,
+          stack: [2, 2, 4],
+          time: [10, 11, 12],
+        },
+        stackTable: {
+          length: 5,
+          prefix: [null, 0, 1, 0, 3],
+          frame: [0, 1, 2, 3, 4],
+        },
+        frameTable: {
+          length: 5,
+          func: [0, 1, 2, 3, 4],
+        },
+        funcTable: {
+          length: 5,
+          name: [0, 1, 2, 3, 4],
+          resource: [0, 0, 1, 0, 1],
+        },
+        resourceTable: {
+          length: 2,
+          lib: [0, 1],
+          name: [5, 6],
+        },
+      },
+    ],
+  };
+
+  await writeFile(profilePath, JSON.stringify(profile), "utf8");
+
+  try {
+    const store = new ProfileStore();
+    const loadedProfile = await store.load(profilePath);
+    const subsystemBreakdown = breakdownBySubsystem(loadedProfile, {
+      resourceQuery: "rspack",
+      prefixSegments: 2,
+      maxGroups: 5,
+      maxExamplesPerGroup: 5,
+      maxThreadsPerGroup: 5,
+    });
+    const focus = focusFunctions(loadedProfile, "metadata_sync", {
+      resourceQuery: "rspack",
+      beforeDepth: 2,
+      afterDepth: 1,
+      maxMatches: 5,
+      maxThreads: 5,
+      maxContexts: 5,
+    });
+
+    assert.equal(subsystemBreakdown.groups[0]?.name, "rspack_core::resolver");
+    assert.equal(subsystemBreakdown.groups[0]?.stackSamples, 3);
+    assert.equal(subsystemBreakdown.groups[1]?.name, "rspack_fs::native_fs");
+    assert.equal(subsystemBreakdown.groups[1]?.stackSamples, 3);
+    assert.equal(
+      subsystemBreakdown.groups[1]?.exampleFunctions[0]?.name,
+      "<rspack_fs::native_fs::NativeFileSystem as rspack_paths::FileMetadata>::metadata_sync",
+    );
+
+    assert.equal(focus.totalMatchedSamples, 2);
+    assert.equal(focus.matches[0]?.sampleCount, 2);
+    assert.equal(focus.threads[0]?.name, "tokio-runtime-worker");
+    assert.deepEqual(focus.topCallers[0]?.path, [
+      "rspack_core::resolver::resolve_tracing [rspack.node]",
+    ]);
+    assert.deepEqual(focus.topCallees[0]?.path, [
+      "stat [libsystem_kernel.dylib]",
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("subsystem grouping prefers the namespace that matches the query", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "mcp-samply-grouping-"));
+  const profilePath = path.join(tempDir, "fixture.json");
+
+  const profile = {
+    meta: {
+      product: "fixture",
+      oscpu: "test-os",
+      interval: 1,
+      startTime: 0,
+    },
+    libs: [{ name: "rspack.node", debugName: "rspack.node" }],
+    threads: [
+      {
+        name: "tokio-runtime-worker",
+        processName: "node",
+        stringArray: [
+          "<tokio::runtime::task::Harness<rspack_core::resolver::Resolver>>::poll",
+          "rspack.node",
+        ],
+        samples: {
+          length: 1,
+          stack: [0],
+          time: [1],
+        },
+        stackTable: {
+          length: 1,
+          prefix: [null],
+          frame: [0],
+        },
+        frameTable: {
+          length: 1,
+          func: [0],
+        },
+        funcTable: {
+          length: 1,
+          name: [0],
+          resource: [0],
+        },
+        resourceTable: {
+          length: 1,
+          lib: [0],
+          name: [1],
+        },
+      },
+    ],
+  };
+
+  await writeFile(profilePath, JSON.stringify(profile), "utf8");
+
+  try {
+    const store = new ProfileStore();
+    const loadedProfile = await store.load(profilePath);
+    const subsystemBreakdown = breakdownBySubsystem(loadedProfile, {
+      query: "rspack_",
+      resourceQuery: "rspack",
+      prefixSegments: 2,
+      maxGroups: 5,
+      maxExamplesPerGroup: 5,
+      maxThreadsPerGroup: 5,
+    });
+
+    assert.equal(subsystemBreakdown.groups[0]?.name, "rspack_core::resolver");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

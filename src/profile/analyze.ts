@@ -74,7 +74,70 @@ export interface FunctionSearchResult {
       processName: string | null;
       selfSamples: number;
       stackSamples: number;
+      }>;
+  }>;
+}
+
+export interface SubsystemBreakdownResult {
+  profilePath: string;
+  sidecarPath: string | null;
+  presymbolicated: boolean;
+  query: string | null;
+  resourceQuery: string | null;
+  prefixSegments: number;
+  groupCount: number;
+  totalGroupedStackSamples: number;
+  totalGroupedSelfSamples: number;
+  groups: Array<{
+    name: string;
+    selfSamples: number;
+    stackSamples: number;
+    exampleFunctions: HotFunctionSummary[];
+    threads: Array<{
+      index: number;
+      name: string;
+      processName: string | null;
+      selfSamples: number;
+      stackSamples: number;
     }>;
+  }>;
+}
+
+export interface HotspotContextResult {
+  profilePath: string;
+  sidecarPath: string | null;
+  presymbolicated: boolean;
+  query: string;
+  resourceQuery: string | null;
+  totalMatchedSamples: number;
+  matchedFunctionCount: number;
+  matches: Array<{
+    name: string;
+    resourceName: string | null;
+    displayName: string;
+    sampleCount: number;
+  }>;
+  threads: Array<{
+    index: number;
+    name: string;
+    processName: string | null;
+    sampleCount: number;
+  }>;
+  topContexts: Array<{
+    match: string;
+    before: string[];
+    after: string[];
+    sampleCount: number;
+  }>;
+  topCallers: Array<{
+    match: string;
+    path: string[];
+    sampleCount: number;
+  }>;
+  topCallees: Array<{
+    match: string;
+    path: string[];
+    sampleCount: number;
   }>;
 }
 
@@ -83,6 +146,11 @@ interface ResolvedFrame {
   name: string;
   resourceName: string | null;
   displayName: string;
+}
+
+interface ResolvedSample {
+  timeMs: number | null;
+  frames: ResolvedFrame[];
 }
 
 interface MutableFunctionStat extends HotFunctionSummary {
@@ -101,6 +169,7 @@ interface ThreadAnalysis {
 }
 
 const analysisCache = new WeakMap<LoadedProfile, Map<number, ThreadAnalysis>>();
+const resolvedSampleCache = new WeakMap<LoadedProfile, Map<number, ResolvedSample[]>>();
 
 export function summarizeProfile(
   profile: LoadedProfile,
@@ -288,6 +357,317 @@ export function searchFunctions(
   };
 }
 
+export function breakdownBySubsystem(
+  profile: LoadedProfile,
+  options: {
+    query?: string | undefined;
+    resourceQuery?: string | undefined;
+    thread?: number | string | undefined;
+    prefixSegments?: number | undefined;
+    maxGroups?: number | undefined;
+    maxExamplesPerGroup?: number | undefined;
+    maxThreadsPerGroup?: number | undefined;
+  } = {},
+): SubsystemBreakdownResult {
+  const prefixSegments = Math.max(1, options.prefixSegments ?? 2);
+  const maxGroups = options.maxGroups ?? 12;
+  const maxExamplesPerGroup = options.maxExamplesPerGroup ?? 5;
+  const maxThreadsPerGroup = options.maxThreadsPerGroup ?? 5;
+  const normalizedQuery = normalizeOptionalQuery(options.query);
+  const normalizedResourceQuery = normalizeOptionalQuery(options.resourceQuery);
+  const threads = selectThreads(profile, options.thread);
+
+  const groups = new Map<
+    string,
+    {
+      name: string;
+      selfSamples: number;
+      stackSamples: number;
+      functions: Map<string, MutableFunctionStat>;
+      threads: Map<
+        number,
+        {
+          index: number;
+          name: string;
+          processName: string | null;
+          selfSamples: number;
+          stackSamples: number;
+        }
+      >;
+    }
+  >();
+
+  for (const thread of threads) {
+    const analysis = getThreadAnalysis(profile, thread);
+    for (const functionStat of analysis.functions.values()) {
+      if (
+        !matchesFunctionFilter(
+          functionStat,
+          normalizedQuery,
+          normalizedResourceQuery,
+        )
+      ) {
+        continue;
+      }
+
+      const groupName = deriveSubsystemName(
+        functionStat.name,
+        prefixSegments,
+        normalizedQuery,
+      );
+      const existingGroup = groups.get(groupName);
+      const group =
+        existingGroup ??
+        {
+          name: groupName,
+          selfSamples: 0,
+          stackSamples: 0,
+          functions: new Map<string, MutableFunctionStat>(),
+          threads: new Map<
+            number,
+            {
+              index: number;
+              name: string;
+              processName: string | null;
+              selfSamples: number;
+              stackSamples: number;
+            }
+          >(),
+        };
+      if (existingGroup === undefined) {
+        groups.set(groupName, group);
+      }
+
+      group.selfSamples += functionStat.selfSamples;
+      group.stackSamples += functionStat.stackSamples;
+
+      const existingFunction = group.functions.get(functionStat.key);
+      if (existingFunction === undefined) {
+        group.functions.set(functionStat.key, { ...functionStat });
+      } else {
+        existingFunction.selfSamples += functionStat.selfSamples;
+        existingFunction.stackSamples += functionStat.stackSamples;
+      }
+
+      const existingThread = group.threads.get(thread.index);
+      if (existingThread === undefined) {
+        group.threads.set(thread.index, {
+          index: thread.index,
+          name: getThreadName(thread),
+          processName: thread.thread.processName ?? null,
+          selfSamples: functionStat.selfSamples,
+          stackSamples: functionStat.stackSamples,
+        });
+      } else {
+        existingThread.selfSamples += functionStat.selfSamples;
+        existingThread.stackSamples += functionStat.stackSamples;
+      }
+    }
+  }
+
+  const sortedGroups = [...groups.values()]
+    .sort((left, right) => compareSampleSummaries(left, right))
+    .slice(0, maxGroups)
+    .map((group) => ({
+      name: group.name,
+      selfSamples: group.selfSamples,
+      stackSamples: group.stackSamples,
+      exampleFunctions: sortFunctions(
+        group.functions,
+        "stackSamples",
+        maxExamplesPerGroup,
+      ),
+      threads: [...group.threads.values()]
+        .sort((left, right) => {
+          if (right.stackSamples !== left.stackSamples) {
+            return right.stackSamples - left.stackSamples;
+          }
+
+          if (right.selfSamples !== left.selfSamples) {
+            return right.selfSamples - left.selfSamples;
+          }
+
+          return left.name.localeCompare(right.name);
+        })
+        .slice(0, maxThreadsPerGroup),
+    }));
+
+  return {
+    profilePath: profile.profilePath,
+    sidecarPath: profile.sidecarPath,
+    presymbolicated: profile.sidecarPath !== null,
+    query: options.query ?? null,
+    resourceQuery: options.resourceQuery ?? null,
+    prefixSegments,
+    groupCount: sortedGroups.length,
+    totalGroupedStackSamples: sortedGroups.reduce(
+      (sum, group) => sum + group.stackSamples,
+      0,
+    ),
+    totalGroupedSelfSamples: sortedGroups.reduce(
+      (sum, group) => sum + group.selfSamples,
+      0,
+    ),
+    groups: sortedGroups,
+  };
+}
+
+export function focusFunctions(
+  profile: LoadedProfile,
+  query: string,
+  options: {
+    resourceQuery?: string | undefined;
+    thread?: number | string | undefined;
+    beforeDepth?: number | undefined;
+    afterDepth?: number | undefined;
+    maxMatches?: number | undefined;
+    maxThreads?: number | undefined;
+    maxContexts?: number | undefined;
+  } = {},
+): HotspotContextResult {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) {
+    throw new Error("The focus query must not be empty.");
+  }
+
+  const normalizedResourceQuery = normalizeOptionalQuery(options.resourceQuery);
+  const beforeDepth = Math.max(0, options.beforeDepth ?? 4);
+  const afterDepth = Math.max(0, options.afterDepth ?? 2);
+  const maxMatches = options.maxMatches ?? 8;
+  const maxThreads = options.maxThreads ?? 5;
+  const maxContexts = options.maxContexts ?? 8;
+  const threads = selectThreads(profile, options.thread);
+
+  const matches = new Map<
+    string,
+    {
+      name: string;
+      resourceName: string | null;
+      displayName: string;
+      sampleCount: number;
+    }
+  >();
+  const threadBreakdown = new Map<
+    number,
+    { index: number; name: string; processName: string | null; sampleCount: number }
+  >();
+  const contexts = new Map<
+    string,
+    { match: string; before: string[]; after: string[]; sampleCount: number }
+  >();
+  const callers = new Map<
+    string,
+    { match: string; path: string[]; sampleCount: number }
+  >();
+  const callees = new Map<
+    string,
+    { match: string; path: string[]; sampleCount: number }
+  >();
+
+  let totalMatchedSamples = 0;
+
+  for (const thread of threads) {
+    const samples = getResolvedSamples(profile, thread);
+    for (const sample of samples) {
+      const matchIndex = findDeepestMatchingFrame(
+        sample.frames,
+        normalizedQuery,
+        normalizedResourceQuery,
+      );
+      if (matchIndex < 0) {
+        continue;
+      }
+
+      totalMatchedSamples += 1;
+      const matchFrame = sample.frames[matchIndex]!;
+      const matchSummary = matches.get(matchFrame.key);
+      if (matchSummary === undefined) {
+        matches.set(matchFrame.key, {
+          name: matchFrame.name,
+          resourceName: matchFrame.resourceName,
+          displayName: matchFrame.displayName,
+          sampleCount: 1,
+        });
+      } else {
+        matchSummary.sampleCount += 1;
+      }
+
+      const existingThread = threadBreakdown.get(thread.index);
+      if (existingThread === undefined) {
+        threadBreakdown.set(thread.index, {
+          index: thread.index,
+          name: getThreadName(thread),
+          processName: thread.thread.processName ?? null,
+          sampleCount: 1,
+        });
+      } else {
+        existingThread.sampleCount += 1;
+      }
+
+      const before = sample.frames
+        .slice(Math.max(0, matchIndex - beforeDepth), matchIndex)
+        .map((frame) => frame.displayName);
+      const after = sample.frames
+        .slice(matchIndex + 1, matchIndex + 1 + afterDepth)
+        .map((frame) => frame.displayName);
+
+      incrementContextMap(
+        contexts,
+        `${matchFrame.key}\u0000${before.join("\u0001")}\u0000${after.join("\u0001")}`,
+        {
+          match: matchFrame.displayName,
+          before,
+          after,
+          sampleCount: 0,
+        },
+      );
+      incrementContextMap(
+        callers,
+        `${matchFrame.key}\u0000${before.join("\u0001")}`,
+        {
+          match: matchFrame.displayName,
+          path: before,
+          sampleCount: 0,
+        },
+      );
+      incrementContextMap(
+        callees,
+        `${matchFrame.key}\u0000${after.join("\u0001")}`,
+        {
+          match: matchFrame.displayName,
+          path: after,
+          sampleCount: 0,
+        },
+      );
+    }
+  }
+
+  return {
+    profilePath: profile.profilePath,
+    sidecarPath: profile.sidecarPath,
+    presymbolicated: profile.sidecarPath !== null,
+    query,
+    resourceQuery: options.resourceQuery ?? null,
+    totalMatchedSamples,
+    matchedFunctionCount: matches.size,
+    matches: [...matches.values()]
+      .sort((left, right) => {
+        if (right.sampleCount !== left.sampleCount) {
+          return right.sampleCount - left.sampleCount;
+        }
+
+        return left.displayName.localeCompare(right.displayName);
+      })
+      .slice(0, maxMatches),
+    threads: [...threadBreakdown.values()]
+      .sort((left, right) => right.sampleCount - left.sampleCount)
+      .slice(0, maxThreads),
+    topContexts: sortSampleCountEntries(contexts, maxContexts),
+    topCallers: sortSampleCountEntries(callers, maxContexts),
+    topCallees: sortSampleCountEntries(callees, maxContexts),
+  };
+}
+
 function getThreadAnalysis(
   profile: LoadedProfile,
   thread: IndexedThread,
@@ -312,28 +692,20 @@ function analyzeThread(profile: LoadedProfile, thread: IndexedThread): ThreadAna
   const functions = new Map<string, MutableFunctionStat>();
   const markers = new Map<string, number>();
   const stacks = new Map<string, { stack: string[]; sampleCount: number }>();
-  const stackCache = new Map<number, ResolvedFrame[]>();
   const sampleTable = thread.thread.samples;
-  const stackIndexes = sampleTable?.stack ?? [];
-  const sampleTimes = sampleTable?.time ?? [];
-  const sampleCount = sampleTable?.length ?? stackIndexes.length;
+  const sampleCount = sampleTable?.length ?? sampleTable?.stack?.length ?? 0;
+  const samples = getResolvedSamples(profile, thread);
 
   let startTimeMs: number | null = null;
   let endTimeMs: number | null = null;
 
-  for (let index = 0; index < sampleCount; index += 1) {
-    const time = sampleTimes[index];
-    if (typeof time === "number") {
-      startTimeMs = takeMin(startTimeMs, time);
-      endTimeMs = takeMax(endTimeMs, time);
+  for (const sample of samples) {
+    if (sample.timeMs !== null) {
+      startTimeMs = takeMin(startTimeMs, sample.timeMs);
+      endTimeMs = takeMax(endTimeMs, sample.timeMs);
     }
 
-    const stackIndex = stackIndexes[index];
-    if (typeof stackIndex !== "number" || stackIndex < 0) {
-      continue;
-    }
-
-    const frames = resolveStackFrames(profile, thread, stackIndex, stackCache);
+    const frames = sample.frames;
     if (frames.length === 0) {
       continue;
     }
@@ -384,6 +756,44 @@ function analyzeThread(profile: LoadedProfile, thread: IndexedThread): ThreadAna
     markers,
     stacks,
   };
+}
+
+function getResolvedSamples(
+  profile: LoadedProfile,
+  thread: IndexedThread,
+): ResolvedSample[] {
+  let cacheForProfile = resolvedSampleCache.get(profile);
+  if (cacheForProfile === undefined) {
+    cacheForProfile = new Map<number, ResolvedSample[]>();
+    resolvedSampleCache.set(profile, cacheForProfile);
+  }
+
+  const cached = cacheForProfile.get(thread.index);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const stackCache = new Map<number, ResolvedFrame[]>();
+  const stackIndexes = thread.thread.samples?.stack ?? [];
+  const sampleTimes = thread.thread.samples?.time ?? [];
+  const sampleCount = thread.thread.samples?.length ?? stackIndexes.length;
+  const samples: ResolvedSample[] = [];
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    const stackIndex = stackIndexes[index];
+    if (typeof stackIndex !== "number" || stackIndex < 0) {
+      continue;
+    }
+
+    samples.push({
+      timeMs:
+        typeof sampleTimes[index] === "number" ? sampleTimes[index]! : null,
+      frames: resolveStackFrames(profile, thread, stackIndex, stackCache),
+    });
+  }
+
+  cacheForProfile.set(thread.index, samples);
+  return samples;
 }
 
 function resolveStackFrames(
@@ -589,6 +999,45 @@ function aggregateFunctions(
   return aggregate;
 }
 
+function compareSampleSummaries(
+  left: { stackSamples: number; selfSamples: number; name: string },
+  right: { stackSamples: number; selfSamples: number; name: string },
+): number {
+  if (right.stackSamples !== left.stackSamples) {
+    return right.stackSamples - left.stackSamples;
+  }
+
+  if (right.selfSamples !== left.selfSamples) {
+    return right.selfSamples - left.selfSamples;
+  }
+
+  return left.name.localeCompare(right.name);
+}
+
+function incrementContextMap<T extends { sampleCount: number }>(
+  map: Map<string, T>,
+  key: string,
+  value: T,
+): void {
+  const existing = map.get(key);
+  if (existing === undefined) {
+    value.sampleCount = 1;
+    map.set(key, value);
+    return;
+  }
+
+  existing.sampleCount += 1;
+}
+
+function sortSampleCountEntries<T extends { sampleCount: number }>(
+  map: Map<string, T>,
+  limit: number,
+): T[] {
+  return [...map.values()]
+    .sort((left, right) => right.sampleCount - left.sampleCount)
+    .slice(0, limit);
+}
+
 function toThreadSummary(
   analysis: ThreadAnalysis,
   options: {
@@ -627,6 +1076,17 @@ function toThreadSummary(
       .sort((left, right) => right.count - left.count)
       .slice(0, options.maxMarkers),
   };
+}
+
+function selectThreads(
+  profile: LoadedProfile,
+  selector: number | string | undefined,
+): IndexedThread[] {
+  if (selector === undefined) {
+    return profile.threads;
+  }
+
+  return [selectThread(profile, selector)];
 }
 
 function selectThread(
@@ -685,6 +1145,97 @@ function getThreadName(thread: IndexedThread): string {
 function getThreadLabel(thread: IndexedThread): string {
   const processName = thread.thread.processName;
   return processName ? `${getThreadName(thread)} (${processName})` : getThreadName(thread);
+}
+
+function normalizeOptionalQuery(value: string | undefined): string | null {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function matchesFunctionFilter(
+  functionStat: Pick<HotFunctionSummary, "name" | "resourceName">,
+  normalizedQuery: string | null,
+  normalizedResourceQuery: string | null,
+): boolean {
+  if (
+    normalizedResourceQuery !== null &&
+    !(functionStat.resourceName ?? "")
+      .toLowerCase()
+      .includes(normalizedResourceQuery)
+  ) {
+    return false;
+  }
+
+  if (normalizedQuery === null) {
+    return true;
+  }
+
+  const haystack = `${functionStat.name}\n${functionStat.resourceName ?? ""}`.toLowerCase();
+  return haystack.includes(normalizedQuery);
+}
+
+function findDeepestMatchingFrame(
+  frames: ResolvedFrame[],
+  normalizedQuery: string,
+  normalizedResourceQuery: string | null,
+): number {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const frame = frames[index]!;
+    if (
+      normalizedResourceQuery !== null &&
+      !(frame.resourceName ?? "").toLowerCase().includes(normalizedResourceQuery)
+    ) {
+      continue;
+    }
+
+    const haystack = `${frame.name}\n${frame.resourceName ?? ""}`.toLowerCase();
+    if (haystack.includes(normalizedQuery)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function deriveSubsystemName(
+  name: string,
+  prefixSegments: number,
+  normalizedQuery: string | null = null,
+): string {
+  const namespacePath = extractNamespacePath(name, normalizedQuery);
+  if (namespacePath === null) {
+    return name;
+  }
+
+  const segments = namespacePath.split("::").filter(Boolean);
+  if (segments.length === 0) {
+    return name;
+  }
+
+  return segments.slice(0, Math.min(prefixSegments, segments.length)).join("::");
+}
+
+function extractNamespacePath(
+  name: string,
+  normalizedQuery: string | null = null,
+): string | null {
+  const matches = [...name.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+/g)]
+    .map((match) => match[0])
+    .filter((match): match is string => typeof match === "string");
+  if (matches.length === 0) {
+    return null;
+  }
+
+  if (normalizedQuery !== null) {
+    const preferredMatch = matches.find((match) =>
+      match.toLowerCase().includes(normalizedQuery),
+    );
+    if (preferredMatch !== undefined) {
+      return preferredMatch;
+    }
+  }
+
+  return matches[0] ?? null;
 }
 
 function computeThreadDuration(thread: RawProfileThread): number | null {

@@ -29,12 +29,20 @@ test("server exposes the doctor tool", async () => {
   const searchTool = tools.tools.find(
     (tool) => tool.name === "samply_search_functions",
   );
+  const subsystemTool = tools.tools.find(
+    (tool) => tool.name === "samply_breakdown_subsystems",
+  );
+  const focusTool = tools.tools.find(
+    (tool) => tool.name === "samply_focus_functions",
+  );
 
   assert.ok(doctorTool);
   assert.ok(recordTool);
   assert.ok(summaryTool);
   assert.ok(inspectTool);
   assert.ok(searchTool);
+  assert.ok(subsystemTool);
+  assert.ok(focusTool);
 
   const result = await client.callTool({
     name: "samply_doctor",

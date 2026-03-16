@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
 import {
+  breakdownBySubsystem,
+  focusFunctions,
   inspectThread,
   searchFunctions,
   summarizeProfile,
@@ -34,6 +36,42 @@ const threadSummarySchema = z.object({
   topSelfFunctions: z.array(hotFunctionSchema),
   topStackFunctions: z.array(hotFunctionSchema),
   topMarkers: z.array(markerSchema),
+});
+
+const functionThreadSchema = z.object({
+  index: z.number().int().nonnegative(),
+  name: z.string(),
+  processName: z.string().nullable(),
+  selfSamples: z.number().int().nonnegative(),
+  stackSamples: z.number().int().nonnegative(),
+});
+
+const hotspotThreadSchema = z.object({
+  index: z.number().int().nonnegative(),
+  name: z.string(),
+  processName: z.string().nullable(),
+  sampleCount: z.number().int().nonnegative(),
+});
+
+const subsystemGroupSchema = z.object({
+  name: z.string(),
+  selfSamples: z.number().int().nonnegative(),
+  stackSamples: z.number().int().nonnegative(),
+  exampleFunctions: z.array(hotFunctionSchema),
+  threads: z.array(functionThreadSchema),
+});
+
+const contextSchema = z.object({
+  match: z.string(),
+  before: z.array(z.string()),
+  after: z.array(z.string()),
+  sampleCount: z.number().int().nonnegative(),
+});
+
+const pathContextSchema = z.object({
+  match: z.string(),
+  path: z.array(z.string()),
+  sampleCount: z.number().int().nonnegative(),
 });
 
 export function registerProfileTools(
@@ -221,15 +259,7 @@ export function registerProfileTools(
         matchCount: z.number().int().nonnegative(),
         matches: z.array(
           hotFunctionSchema.extend({
-            threads: z.array(
-              z.object({
-                index: z.number().int().nonnegative(),
-                name: z.string(),
-                processName: z.string().nullable(),
-                selfSamples: z.number().int().nonnegative(),
-                stackSamples: z.number().int().nonnegative(),
-              }),
-            ),
+            threads: z.array(functionThreadSchema),
           }),
         ),
       }),
@@ -247,6 +277,221 @@ export function registerProfileTools(
       const result = searchFunctions(loadedProfile, query, {
         maxResults,
         maxThreadsPerResult,
+      });
+
+      return toToolResult(result as unknown as Record<string, unknown>);
+    },
+  );
+
+  server.registerTool(
+    "samply_breakdown_subsystems",
+    {
+      title: "samply breakdown subsystems",
+      description:
+        "Group hot functions by Rust / C++ namespace prefix so agents can identify which native subsystems dominate a profile. This is useful for Rspack and other native-heavy builds.",
+      inputSchema: {
+        profilePath: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Path to a profile JSON or JSON.GZ file."),
+        query: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional case-insensitive filter applied to function names and resources before grouping."),
+        resourceQuery: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional case-insensitive filter applied to resource / library names before grouping."),
+        thread: z
+          .union([z.number().int().nonnegative(), z.string().trim().min(1)])
+          .optional()
+          .describe("Optional thread index or name filter."),
+        prefixSegments: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("How many namespace segments to keep when building subsystem names."),
+        maxGroups: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of subsystem groups to return."),
+        maxExamplesPerGroup: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of example functions to keep for each group."),
+        maxThreadsPerGroup: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of thread breakdown entries to keep for each group."),
+      },
+      outputSchema: z.object({
+        profilePath: z.string(),
+        sidecarPath: z.string().nullable(),
+        presymbolicated: z.boolean(),
+        query: z.string().nullable(),
+        resourceQuery: z.string().nullable(),
+        prefixSegments: z.number().int().positive(),
+        groupCount: z.number().int().nonnegative(),
+        totalGroupedStackSamples: z.number().int().nonnegative(),
+        totalGroupedSelfSamples: z.number().int().nonnegative(),
+        groups: z.array(subsystemGroupSchema),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({
+      profilePath,
+      query,
+      resourceQuery,
+      thread,
+      prefixSegments,
+      maxGroups,
+      maxExamplesPerGroup,
+      maxThreadsPerGroup,
+    }) => {
+      const resolvedPath = resolveRequestedProfilePath(state, profilePath);
+      const loadedProfile = await state.profileStore.load(resolvedPath);
+      state.latestProfilePath = loadedProfile.profilePath;
+      const result = breakdownBySubsystem(loadedProfile, {
+        query,
+        resourceQuery,
+        thread,
+        prefixSegments,
+        maxGroups,
+        maxExamplesPerGroup,
+        maxThreadsPerGroup,
+      });
+
+      return toToolResult(result as unknown as Record<string, unknown>);
+    },
+  );
+
+  server.registerTool(
+    "samply_focus_functions",
+    {
+      title: "samply focus functions",
+      description:
+        "Find the hottest sample contexts around a target function or namespace. Each matching sample is counted once using its deepest matching frame.",
+      inputSchema: {
+        profilePath: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Path to a profile JSON or JSON.GZ file."),
+        query: z
+          .string()
+          .trim()
+          .min(1)
+          .describe("Case-insensitive function / namespace substring to focus on."),
+        resourceQuery: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("Optional case-insensitive resource / library name filter."),
+        thread: z
+          .union([z.number().int().nonnegative(), z.string().trim().min(1)])
+          .optional()
+          .describe("Optional thread index or name filter."),
+        beforeDepth: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("How many ancestor frames to include before the match."),
+        afterDepth: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("How many descendant frames to include after the match."),
+        maxMatches: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of matching functions to return."),
+        maxThreads: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of matching threads to return."),
+        maxContexts: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum number of caller/callee/context entries to return."),
+      },
+      outputSchema: z.object({
+        profilePath: z.string(),
+        sidecarPath: z.string().nullable(),
+        presymbolicated: z.boolean(),
+        query: z.string(),
+        resourceQuery: z.string().nullable(),
+        totalMatchedSamples: z.number().int().nonnegative(),
+        matchedFunctionCount: z.number().int().nonnegative(),
+        matches: z.array(
+          z.object({
+            name: z.string(),
+            resourceName: z.string().nullable(),
+            displayName: z.string(),
+            sampleCount: z.number().int().nonnegative(),
+          }),
+        ),
+        threads: z.array(hotspotThreadSchema),
+        topContexts: z.array(contextSchema),
+        topCallers: z.array(pathContextSchema),
+        topCallees: z.array(pathContextSchema),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({
+      profilePath,
+      query,
+      resourceQuery,
+      thread,
+      beforeDepth,
+      afterDepth,
+      maxMatches,
+      maxThreads,
+      maxContexts,
+    }) => {
+      const resolvedPath = resolveRequestedProfilePath(state, profilePath);
+      const loadedProfile = await state.profileStore.load(resolvedPath);
+      state.latestProfilePath = loadedProfile.profilePath;
+      const result = focusFunctions(loadedProfile, query, {
+        resourceQuery,
+        thread,
+        beforeDepth,
+        afterDepth,
+        maxMatches,
+        maxThreads,
+        maxContexts,
       });
 
       return toToolResult(result as unknown as Record<string, unknown>);
