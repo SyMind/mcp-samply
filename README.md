@@ -27,7 +27,7 @@ npx mcp-samply
 
 ## Tools
 
-The server exposes seven MCP tools:
+The server exposes eight MCP tools:
 
 - `samply_doctor`: verify whether the `samply` binary is available and report version / environment details
 - `samply_record`: run `samply record --save-only` and save a profile to disk
@@ -36,6 +36,7 @@ The server exposes seven MCP tools:
 - `samply_search_functions`: search for functions or library names across the loaded profile
 - `samply_breakdown_subsystems`: group native functions by namespace prefix so agents can see which Rust / C++ subsystems dominate a profile
 - `samply_focus_functions`: recover the most common caller / callee contexts around a target function or namespace
+- `samply_locate_symbols`: map hot native symbols back to likely local source files so an agent can inspect implementation details
 
 ## Presymbolication
 
@@ -81,6 +82,7 @@ You can still use the analysis tools on an existing profile file even when `samp
 5. Use `samply_search_functions` for focused follow-up questions.
 6. Use `samply_breakdown_subsystems` to quantify native hotspots by crate / module prefix.
 7. Use `samply_focus_functions` to turn syscalls such as `stat` / `read` back into actionable upstream call paths.
+8. Use `samply_locate_symbols` to map the hottest native frames back to local source files before reading or patching code.
 
 ## Rust Hotspot Workflow
 
@@ -91,6 +93,16 @@ For native-heavy tools such as Rspack, a productive sequence is:
 3. Identify the hottest crates / modules, for example `rspack_resolver`, `rspack_fs`, or `swc_ecma_parser`.
 4. Call `samply_focus_functions` on key functions such as `resolve_tracing`, `find_package_json`, `metadata_sync`, or `read_sync`.
 5. Use the returned `before` / `after` context windows to determine whether the real bottleneck is resolution, filesystem probing, parsing, loader execution, or runtime glue.
+6. Call `samply_locate_symbols` with the relevant workspace roots, for example the local `rspack` checkout plus Cargo registry sources, to map those stack symbols back to concrete files and line hits.
+
+Example roots for a Rspack investigation:
+
+```json
+[
+  "/path/to/rspack",
+  "/Users/you/.cargo/registry/src/index.crates.io-*/rspack_resolver-*"
+]
+```
 
 ## Local Development
 
