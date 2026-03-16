@@ -19,20 +19,27 @@ test("server exposes the doctor tool", async () => {
 
   const tools = await client.listTools();
   const doctorTool = tools.tools.find((tool) => tool.name === "samply_doctor");
+  const recordTool = tools.tools.find((tool) => tool.name === "samply_record");
 
   assert.ok(doctorTool);
+  assert.ok(recordTool);
 
   const result = await client.callTool({
     name: "samply_doctor",
     arguments: {},
   });
   const structuredContent = result.structuredContent as
-    | { ok?: boolean; cwd?: string }
+    | { ok?: boolean; cwd?: string; version?: string | null }
     | undefined;
 
   assert.equal(result.isError, undefined);
   assert.equal(typeof structuredContent?.ok, "boolean");
   assert.equal(structuredContent?.cwd, process.cwd());
+  assert.equal(
+    structuredContent?.version === null ||
+      typeof structuredContent?.version === "string",
+    true,
+  );
 
   await Promise.all([clientTransport.close(), serverTransport.close()]);
 });
