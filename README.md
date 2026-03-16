@@ -1,6 +1,6 @@
 # mcp-samply
 
-`mcp-samply` is a TypeScript MCP server for [`samply`](https://github.com/mstange/samply).
+`mcp-samply` is a MCP server for [`samply`](https://github.com/mstange/samply).
 
 It is designed for AI agents that need to:
 
