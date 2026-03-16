@@ -20,9 +20,21 @@ test("server exposes the doctor tool", async () => {
   const tools = await client.listTools();
   const doctorTool = tools.tools.find((tool) => tool.name === "samply_doctor");
   const recordTool = tools.tools.find((tool) => tool.name === "samply_record");
+  const summaryTool = tools.tools.find(
+    (tool) => tool.name === "samply_summarize_profile",
+  );
+  const inspectTool = tools.tools.find(
+    (tool) => tool.name === "samply_inspect_thread",
+  );
+  const searchTool = tools.tools.find(
+    (tool) => tool.name === "samply_search_functions",
+  );
 
   assert.ok(doctorTool);
   assert.ok(recordTool);
+  assert.ok(summaryTool);
+  assert.ok(inspectTool);
+  assert.ok(searchTool);
 
   const result = await client.callTool({
     name: "samply_doctor",

@@ -17,6 +17,7 @@ export interface SamplyRecordOptions {
   mainThreadOnly?: boolean | undefined;
   reuseThreads?: boolean | undefined;
   gfx?: boolean | undefined;
+  presymbolicate?: boolean | undefined;
   extraArgs?: string[] | undefined;
   env?: NodeJS.ProcessEnv | undefined;
 }
@@ -27,6 +28,7 @@ export interface SamplyRecordResult {
   samplyPath: string;
   cwd: string;
   profilePath: string | null;
+  sidecarPath: string | null;
   args: string[];
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -48,6 +50,7 @@ export async function runSamplyRecord(
       samplyPath: options.samplyPath ?? DEFAULT_SAMPLY_BIN,
       cwd: resolveCwd(options.cwd),
       profilePath: null,
+      sidecarPath: null,
       args: [],
       exitCode: null,
       signal: null,
@@ -69,6 +72,7 @@ export async function runSamplyRecord(
       samplyPath: requestedSamplyPath,
       cwd: resolveCwd(options.cwd),
       profilePath: null,
+      sidecarPath: null,
       args: [],
       exitCode: null,
       signal: null,
@@ -98,6 +102,10 @@ export async function runSamplyRecord(
       },
     });
     const fileWritten = await fileExists(profilePath);
+    const sidecarPath =
+      options.presymbolicate !== false
+        ? await findSidecarPath(profilePath)
+        : null;
     const ok = commandResult.exitCode === 0 && fileWritten;
     const error =
       commandResult.exitCode !== 0
@@ -112,6 +120,7 @@ export async function runSamplyRecord(
       samplyPath,
       cwd,
       profilePath: fileWritten ? profilePath : null,
+      sidecarPath,
       args,
       exitCode: commandResult.exitCode,
       signal: commandResult.signal,
@@ -128,6 +137,7 @@ export async function runSamplyRecord(
       samplyPath,
       cwd,
       profilePath: null,
+      sidecarPath: null,
       args,
       exitCode: null,
       signal: null,
@@ -145,6 +155,10 @@ export function buildSamplyRecordArgs(
   outputPath: string,
 ): string[] {
   const args = ["record", "--save-only", "--output", outputPath];
+
+  if (options.presymbolicate !== false) {
+    args.push("--unstable-presymbolicate");
+  }
 
   if (options.rateHz !== undefined) {
     args.push("--rate", String(options.rateHz));
@@ -217,4 +231,15 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function findSidecarPath(profilePath: string): Promise<string | null> {
+  const candidate = resolveSidecarPath(profilePath);
+  return (await fileExists(candidate)) ? candidate : null;
+}
+
+export function resolveSidecarPath(profilePath: string): string {
+  return profilePath.endsWith(".gz")
+    ? `${profilePath.slice(0, -3)}.syms.json`
+    : `${profilePath}.syms.json`;
 }

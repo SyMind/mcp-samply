@@ -2,10 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 
 import { runSamplyRecord } from "../samply/record.js";
-
-export interface SamplyToolState {
-  latestProfilePath: string | null;
-}
+import type { SamplyToolState } from "./state.js";
 
 export function registerRecordTool(
   server: McpServer,
@@ -81,6 +78,12 @@ export function registerRecordTool(
           .boolean()
           .optional()
           .describe("Enable Graphics-related event capture."),
+        presymbolicate: z
+          .boolean()
+          .optional()
+          .describe(
+            "Generate a `.syms.json` sidecar for better offline symbol resolution. Enabled by default.",
+          ),
         extraArgs: z
           .array(z.string())
           .optional()
@@ -92,6 +95,7 @@ export function registerRecordTool(
         samplyPath: z.string(),
         cwd: z.string(),
         profilePath: z.string().nullable(),
+        sidecarPath: z.string().nullable(),
         args: z.array(z.string()),
         exitCode: z.number().int().nullable(),
         signal: z.string().nullable(),

@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ProfileStore } from "./profile/store.js";
 import { registerDoctorTool } from "./tools/doctor.js";
+import { registerProfileTools } from "./tools/profile.js";
 import { registerRecordTool } from "./tools/record.js";
 
 export function createServer(): McpServer {
@@ -9,10 +11,12 @@ export function createServer(): McpServer {
   });
   const state = {
     latestProfilePath: null as string | null,
+    profileStore: new ProfileStore(),
   };
 
   registerDoctorTool(server);
   registerRecordTool(server, state);
+  registerProfileTools(server, state);
 
   return server;
 }

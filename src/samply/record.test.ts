@@ -19,8 +19,11 @@ test("runSamplyRecord builds a save-only invocation and records output", async (
       "const args = process.argv.slice(2);",
       "const outputIndex = args.findIndex((arg) => arg === '--output');",
       "const outputPath = args[outputIndex + 1];",
+      "const presymbolicate = args.includes('--unstable-presymbolicate');",
+      "const sidecarPath = outputPath.endsWith('.gz') ? `${outputPath.slice(0, -3)}.syms.json` : `${outputPath}.syms.json`;",
       "writeFileSync(process.env.FAKE_CAPTURE_PATH, JSON.stringify({ args, cwd: process.cwd() }, null, 2));",
       "writeFileSync(outputPath, JSON.stringify({ meta: { product: 'fake' }, threads: [] }));",
+      "if (presymbolicate) writeFileSync(sidecarPath, JSON.stringify({ string_table: [], data: [] }));",
       "process.stdout.write('fake stdout');",
       "process.stderr.write('fake stderr');",
     ].join("\n"),
@@ -39,6 +42,7 @@ test("runSamplyRecord builds a save-only invocation and records output", async (
       mainThreadOnly: true,
       reuseThreads: true,
       gfx: true,
+      presymbolicate: true,
       extraArgs: ["--jit-markers"],
       env: {
         ...process.env,
@@ -49,6 +53,7 @@ test("runSamplyRecord builds a save-only invocation and records output", async (
     assert.equal(result.ok, true);
     assert.equal(result.mode, "command");
     assert.ok(result.profilePath);
+    assert.equal(result.sidecarPath, `${result.profilePath.slice(0, -3)}.syms.json`);
     assert.match(result.profilePath, /\.json\.gz$/);
     assert.equal(result.stdout, "fake stdout");
     assert.equal(result.stderr, "fake stderr");
@@ -64,6 +69,7 @@ test("runSamplyRecord builds a save-only invocation and records output", async (
       "--save-only",
       "--output",
       result.profilePath,
+      "--unstable-presymbolicate",
       "--rate",
       "321",
       "--duration",
