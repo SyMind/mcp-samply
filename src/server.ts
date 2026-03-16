@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ProfileStore } from "./profile/store.js";
 import { registerDoctorTool } from "./tools/doctor.js";
+import { registerLocateTool } from "./tools/locate.js";
 import { registerProfileTools } from "./tools/profile.js";
 import { registerRecordTool } from "./tools/record.js";
 
@@ -17,6 +18,7 @@ export function createServer(): McpServer {
   registerDoctorTool(server);
   registerRecordTool(server, state);
   registerProfileTools(server, state);
+  registerLocateTool(server);
 
   return server;
 }
