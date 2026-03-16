@@ -24,8 +24,8 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "test": "tsx --test src/**/*.test.ts",
     "check": "npm run build && npm run test",
