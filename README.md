@@ -96,26 +96,6 @@ You can still use the analysis tools on an existing profile file even when `samp
 7. Use `samply_focus_functions` to turn syscalls such as `stat` / `read` back into actionable upstream call paths.
 8. Use `samply_locate_symbols` to map the hottest native frames back to local source files before reading or patching code.
 
-## Rust Hotspot Workflow
-
-For native-heavy tools such as Rspack, a productive sequence is:
-
-1. Record with presymbolication enabled.
-2. Call `samply_breakdown_subsystems` with `resourceQuery: "rspack"` and a namespace-oriented `query` such as `rspack_`.
-3. Identify the hottest crates / modules, for example `rspack_resolver`, `rspack_fs`, or `swc_ecma_parser`.
-4. Call `samply_focus_functions` on key functions such as `resolve_tracing`, `find_package_json`, `metadata_sync`, or `read_sync`.
-5. Use the returned `before` / `after` context windows to determine whether the real bottleneck is resolution, filesystem probing, parsing, loader execution, or runtime glue.
-6. Call `samply_locate_symbols` with the relevant workspace roots, for example the local `rspack` checkout plus Cargo registry sources, to map those stack symbols back to concrete files and line hits.
-
-Example roots for a Rspack investigation:
-
-```json
-[
-  "/path/to/rspack",
-  "/Users/you/.cargo/registry/src/index.crates.io-*/rspack_resolver-*"
-]
-```
-
 ## Local Development
 
 ```sh
