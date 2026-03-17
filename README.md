@@ -100,6 +100,24 @@ npm run dev
 
 Build output is published through the `mcp-samply` bin entry so the package can be launched with `npx`.
 
+## Publishing To npm
+
+This repository includes a GitHub Actions workflow at `.github/workflows/publish-npm.yml`.
+
+Before using it, add a repository secret named `NPM_TOKEN` with publish access to the `mcp-samply` package on npm.
+
+The workflow can be triggered in two ways:
+
+1. Publish a GitHub Release whose tag matches the package version, for example `v0.1.0`.
+2. Run the workflow manually from the Actions tab with `workflow_dispatch` and provide the exact package version, for example `0.1.0`.
+
+On every publish run, the workflow will:
+
+1. Install dependencies with `npm ci`.
+2. Run `npm run check`.
+3. Run `npm pack --dry-run`.
+4. Publish with `npm publish --provenance --access public`.
+
 ## Debugging The MCP Surface
 
 This repository also includes a small local debug client so you can inspect the MCP surface and call tools without wiring up an external MCP host first.
