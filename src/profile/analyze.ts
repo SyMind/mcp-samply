@@ -839,7 +839,9 @@ function resolveFrame(
   const address = getNumber(thread.thread.frameTable?.address, frameIndex);
   const lib = resolveResourceLib(thread, resourceIndex);
   const sidecarName = profile.symbolicator.lookup(lib, address);
-  const chosenName = chooseFrameName(sidecarName, nativeName, rawName, address);
+  const chosenName = profile.symbolicator.normalizeName(
+    chooseFrameName(sidecarName, nativeName, rawName, address),
+  ) ?? "UNKNOWN";
   const displayName =
     resourceName !== null && !chosenName.includes(resourceName)
       ? `${chosenName} [${resourceName}]`
