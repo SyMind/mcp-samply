@@ -51,18 +51,6 @@ profile.json.syms.json
 
 `mcp-samply` reads that sidecar automatically and uses it to resolve native addresses into function names during offline analysis. This is critical for AI-driven performance work; without it, saved profiles often contain only raw addresses.
 
-When sidecar data is missing or incomplete, `mcp-samply` also falls back to local symbol restoration:
-
-- `atos` on macOS for address-to-symbol lookup when a library path is present
-- `rustfilt` for demangling Rust symbols returned by `atos` or sidecar data
-
-Optional environment overrides:
-
-```sh
-MCP_SAMPLY_ATOS_BIN=/custom/path/to/atos
-MCP_SAMPLY_RUSTFILT_BIN=/custom/path/to/rustfilt
-```
-
 ## Use With Codex
 
 Example MCP server config:
