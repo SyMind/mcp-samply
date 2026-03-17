@@ -27,6 +27,7 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
+    "debug:mcp": "tsx scripts/debug-mcp.ts",
     "test": "tsx --test src/**/*.test.ts",
     "check": "npm run build && npm run test",
     "prepare": "npm run build"

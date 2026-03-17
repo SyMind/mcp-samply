@@ -111,3 +111,51 @@ npm run dev
 ```
 
 Build output is published through the `mcp-samply` bin entry so the package can be launched with `npx`.
+
+## Debugging The MCP Surface
+
+This repository also includes a small local debug client so you can inspect the MCP surface and call tools without wiring up an external MCP host first.
+
+List the exposed MCP surfaces:
+
+```sh
+npm run debug:mcp -- list-tools
+```
+
+The output includes:
+
+- `tools`: the currently registered MCP tools, including input and output schemas
+- `prompts`: prompt definitions, if any
+- `resources`: resource definitions, if any
+
+Call a tool and print the full JSON result:
+
+```sh
+npm run debug:mcp -- call samply_doctor
+```
+
+Summarize one of the sample profiles committed in this repo:
+
+```sh
+npm run debug:mcp -- call samply_summarize_profile --args '{"profilePath":".samply/presym-smoke.json.gz"}'
+```
+
+Run symbol lookup against a local source tree:
+
+```sh
+npm run debug:mcp -- call samply_locate_symbols --args '{"roots":["/absolute/path/to/project"],"symbols":["rspack::Compiler::build"],"extensions":[".rs",".cc",".cpp"]}'
+```
+
+For larger payloads, store the tool input in a JSON file and use `--args-file`:
+
+```sh
+npm run debug:mcp -- call samply_record --args-file ./tool-args.json
+```
+
+Recommended manual debug loop:
+
+1. Run `npm run debug:mcp -- list-tools` to confirm the tool names and schemas.
+2. Call `samply_doctor` first to verify environment and binary resolution.
+3. Use `samply_record` or a saved `profile.json(.gz)` to generate real inputs.
+4. Run `samply_summarize_profile`, then drill into `samply_inspect_thread`, `samply_search_functions`, `samply_breakdown_subsystems`, and `samply_focus_functions`.
+5. Use `samply_locate_symbols` with your project root to confirm hotspot symbols map back to the files you expect.
